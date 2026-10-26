@@ -80,7 +80,7 @@ def export(*, base, scored, today, js_report, bt, ev, live, cfg, meta, days: int
         "next_ex_dividend_est": js_report["next_ex_dividend_est"],
         "next_rebalance_est": js_report["next_rebalance_est"],
         "ttm_dividend": _f(base.loc[base.index > base.index[-1] - pd.Timedelta(days=365), "div"].sum()),
-        "config": {k: cfg.get(k) for k in ("monthly_budget", "reserve", "fee_rate", "fee_discount", "fee_min", "dca")}
+        "config": {k: cfg.get(k) for k in ("monthly_budget", "reserve", "fee_rate", "fee_discount", "fee_min", "dca", "extra_pool")}
                   | {"thresholds": cfg["thresholds"]},
         "engine": js_report["engine"], "data_source": meta.get("sources", {}).get("price"),
         "demo": "DEMO" in meta.get("sources", {}).values(),

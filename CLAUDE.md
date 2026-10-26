@@ -37,11 +37,16 @@ GitHub Actions 每個交易日 16:00（台北）自動更新資料與報告；�
 
 ## 記錄交易
 
+使用者的資金分兩種，記錄時要分清楚（設定在 `config.yaml`）：
+- **定期定額**：每月 8、18、28 日各 3,000 元自動扣款。記錄時 note 填「定期定額」，**不要**加 `--extra`。
+- **額外資金池**：一筆 100,000 元，用完為止。一般加碼每月最多動用月初剩餘的 10%，積極加碼 30%。使用者說「額外加碼」或「用加碼資金買」時，加上 `--extra`，這筆會從資金池扣除。分不清楚就問。
+
 使用者說「今天買了 5 張 36.2」時：
 1. 複誦確認：日期、股數（1 張 = 1000 股，零股照實際股數）、價格、手續費（預設依 `config.yaml` 計算）。
 2. 使用者確認後才寫入：
    ```
-   python -m src.portfolio add --date 2026-10-23 --shares 5000 --price 36.2
+   python -m src.portfolio add --date 2026-10-23 --shares 5000 --price 36.2 --note 定期定額
+   python -m src.portfolio add --date 2026-10-23 --shares 280 --price 35.5 --extra   # 額外加碼
    ```
    使用者給的是「總張數與均價」而不是逐筆紀錄時，用一筆 buy 代表期初持股，note 填「期初持股」。
 3. commit 並 push：`git add data/trades.csv && git commit -m "記錄交易：<內容>" && git push`

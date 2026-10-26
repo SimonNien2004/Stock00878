@@ -91,7 +91,28 @@ def advice(sig: str, cfg: dict, close: float, pos: dict) -> list[str]:
         days = "、".join(str(x) for x in dca["days"])
         lines.append(f"定期定額照常：每月 {days} 日各 {dca['amount']:,.0f} 元，下次約 {nd:%m/%d} 扣款（遇休市順延）。")
     aim = cfg["thresholds"]["aggressive"]
-    if sig == AGGRESSIVE:
+    pool = pos.get("pool")
+    if pool:
+        left = f"資金池剩 {pool['remaining']:,.0f} / {pool['total']:,.0f} 元"
+        if pool["remaining"] <= 0:
+            lines.append(f"額外加碼：資金池已用完（{left}）。")
+        elif sig == AGGRESSIVE:
+            amt = pool["cap_aggressive"]
+            if amt >= 100:
+                lines.append(f"額外加碼：本月最多可動用 {amt // 100 * 100:,.0f} 元（月初剩餘資金的 {pool['aggressive_pct']:.0%}"
+                             f"，已扣本月已用 {pool['used_month']:,.0f} 元；{left}）。")
+            else:
+                lines.append(f"額外加碼：本月額度已用完，下個月再動用（{left}）。")
+        elif sig == NORMAL:
+            amt = pool["cap_normal"]
+            if amt >= 100:
+                lines.append(f"額外加碼：本月最多可動用 {amt // 100 * 100:,.0f} 元（月初剩餘資金的 {pool['normal_pct']:.0%}；{left}）；"
+                             f"想投入更多，等評分 ≥ {aim} 再用。")
+            else:
+                lines.append(f"額外加碼：一般加碼的本月額度已用完；評分 ≥ {aim} 時可再動用到 {pool['aggressive_pct']:.0%}（{left}）。")
+        else:
+            lines.append(f"額外加碼：先保留資金池，定期定額照常即可（{left}）。")
+    elif sig == AGGRESSIVE:
         if B:
             amt = B
             lines.append(f"額外加碼：可投入本月全部額外預算 {B:,.0f} 元" + (f"；預備金也可視情況動用（上限 {R:,.0f} 元）。" if R else "。"))
@@ -105,6 +126,7 @@ def advice(sig: str, cfg: dict, close: float, pos: dict) -> list[str]:
             lines.append(f"額外加碼：可小額加碼；想一次投入較多，等評分 ≥ {aim} 再用。")
     else:
         lines.append("額外加碼：先保留，定期定額照常即可。")
+    amt = int(amt // 100 * 100)   # 取整到百元
     w_amt = amt or dca.get("amount", 0)
     if w_amt:
         w = what_if(pos, w_amt, close, cfg)
@@ -176,7 +198,11 @@ def write_daily(*, base, X, today, contrib, pos, bt, ev, live, cfg, engine, meta
               f"| 未實現損益 | {pos['unrealized']:+,.0f} 元（{pos['unrealized_pct']:+.1%}） |",
               f"| 累計領息（扣補充保費） | {pos['cum_dividends']:,.0f} 元 |",
               f"| 含息總損益 | {pos['total_pl']:+,.0f} 元 |",
-              f"| 成本殖利率（近 12 個月） | {pos['cost_yield']:.2%} |", ""]
+              f"| 成本殖利率（近 12 個月） | {pos['cost_yield']:.2%} |"]
+        if pos.get("pool"):
+            p = pos["pool"]
+            L += [f"| 額外資金池 | 已用 {p['used']:,.0f}／{p['total']:,.0f} 元，剩 {p['remaining']:,.0f} 元 |"]
+        L += [""]
     else:
         L += ["尚未記錄持股。在 Claude 對話中說「我有 20 張，均價 33.5」或回報交易即可建立。", ""]
 
@@ -193,7 +219,7 @@ def write_daily(*, base, X, today, contrib, pos, bt, ev, live, cfg, engine, meta
 
     s, c = bt["signal"], bt["dca"]
     L += ["## 系統表現", "",
-          f"回測 {bt['start']:%Y-%m-%d} ～ {bt['end']:%Y-%m-%d}，每月額外預算 {eval_budget(cfg):,.0f} 元{'（未設定，以定期定額月總額假設）' if not cfg.get('monthly_budget') else ''}，僅用樣本外預測：", "",
+          f"回測 {bt['start']:%Y-%m-%d} ～ {bt['end']:%Y-%m-%d}，每月 {eval_budget(cfg):,.0f} 元{'（以定期定額月總額作為回測假設）' if not cfg.get('monthly_budget') else ''}，僅用樣本外預測：", "",
           "| 策略 | 年化報酬（XIRR） | 總報酬 | 平均買入價（還原價） | 最大回撤 |", "| --- | --- | --- | --- | --- |",
           f"| 照訊號加碼 | {_pct(s['xirr'])} | {_pct(s['total_return'])} | {s['avg_cost']:.2f} | {_pct(s['max_drawdown'])} |",
           f"| 定期定額 | {_pct(c['xirr'])} | {_pct(c['total_return'])} | {c['avg_cost']:.2f} | {_pct(c['max_drawdown'])} |",

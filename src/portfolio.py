@@ -54,6 +54,43 @@ def add_trade(date: str, shares: int, price: float, action: str = "buy", fee: fl
     return row
 
 
+EXTRA_TAG = "額外加碼"
+
+
+def pool_status(cfg: dict, trades: pd.DataFrame | None = None, today: pd.Timestamp | None = None) -> dict | None:
+    """額外加碼資金池：總額、已用、剩餘、本月已用、本月各訊號可動用上限。"""
+    pool = cfg.get("extra_pool") or {}
+    total = float(pool.get("total") or 0)
+    if total <= 0:
+        return None
+    trades = load_trades() if trades is None else trades
+    today = (today or pd.Timestamp.today()).normalize()
+    start = pd.Timestamp(pool.get("start", "1900-01-01"))
+    if len(trades):
+        t = trades[(trades["action"] == "buy") & (trades["date"] >= start)
+                   & trades["note"].astype(str).str.contains(EXTRA_TAG)]
+    else:
+        t = trades
+    spend = (t["shares"] * t["price"] + t["fee"]) if len(t) else pd.Series(dtype=float)
+    used = float(spend.sum()) if len(t) else 0.0
+    month0 = today.replace(day=1)
+    used_month = float(spend[t["date"] >= month0].sum()) if len(t) else 0.0
+    remaining = max(0.0, total - used)
+    at_month_start = remaining + used_month
+    npct, apct = float(pool.get("normal_pct", 0.10)), float(pool.get("aggressive_pct", 0.30))
+    return {"total": total, "used": used, "remaining": remaining, "used_month": used_month,
+            "cap_normal": min(max(0.0, at_month_start * npct - used_month), remaining),
+            "cap_aggressive": min(max(0.0, at_month_start * apct - used_month), remaining),
+            "normal_pct": npct, "aggressive_pct": apct}
+
+
+def with_pool(res: dict, cfg: dict) -> dict:
+    p = pool_status(cfg)
+    if p:
+        res["pool"] = p
+    return res
+
+
 def holdings_on(trades: pd.DataFrame, before: pd.Timestamp) -> float:
     t = trades[trades["date"] < before]
     return float(t.loc[t["action"] == "buy", "shares"].sum() - t.loc[t["action"] == "sell", "shares"].sum())
@@ -71,7 +108,7 @@ def summary(base: pd.DataFrame, cfg: dict) -> dict:
     res = {"has_position": False, "close": close, "date": last_date, "ttm_div": ttm_div,
            "last_div": last_div, "market_yield": ttm_div / close if close else 0.0}
     if trades.empty:
-        return res
+        return with_pool(res, cfg)
 
     shares = cost = 0.0
     for _, t in trades.iterrows():
@@ -105,7 +142,7 @@ def summary(base: pd.DataFrame, cfg: dict) -> dict:
         "next_div_nhi": next_div * NHI_RATE if next_div >= NHI_THRESHOLD else 0.0,
         "n_trades": len(trades), "last_trade": trades.iloc[-1].to_dict(),
     })
-    return res
+    return with_pool(res, cfg)
 
 
 def what_if(pos: dict, amount: float, price: float, cfg: dict) -> dict:
@@ -129,10 +166,15 @@ def _cli():
     a.add_argument("--action", default="buy", choices=["buy", "sell"])
     a.add_argument("--fee", type=float, default=None)
     a.add_argument("--note", default="")
+    a.add_argument("--extra", action="store_true", help="這筆是動用額外資金池的加碼（定期定額不要加）")
     sub.add_parser("summary", help="顯示持股摘要")
     args = ap.parse_args()
     if args.cmd == "add":
-        print("已記錄：", add_trade(args.date, args.shares, args.price, args.action, args.fee, args.note))
+        note = f"{EXTRA_TAG} {args.note}".strip() if args.extra and EXTRA_TAG not in args.note else args.note
+        print("已記錄：", add_trade(args.date, args.shares, args.price, args.action, args.fee, note))
+        p = pool_status(load_config())
+        if p:
+            print(f"額外資金池：已用 {p['used']:,.0f}／{p['total']:,.0f} 元，剩 {p['remaining']:,.0f} 元")
     else:
         from .features import build
         cfg = load_config()
