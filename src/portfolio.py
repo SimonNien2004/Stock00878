@@ -1,0 +1,149 @@
+"""持股與成本紀錄。
+
+data/trades.csv 欄位：date, action, shares, price, fee, note
+  action：buy（買進）、sell（賣出，存股少用）
+  shares：股數（1 張 = 1000 股，零股照實際股數）
+配息不用手動記：依除息日前一天的持股 × 每單位配息自動計算。
+
+指令列用法：
+  python -m src.portfolio add --date 2026-10-23 --shares 5000 --price 36.2
+  python -m src.portfolio summary
+"""
+from __future__ import annotations
+
+import argparse
+
+import pandas as pd
+
+from .config import TRADES_CSV, ensure_dirs, load_config
+
+COLUMNS = ["date", "action", "shares", "price", "fee", "note"]
+NHI_RATE, NHI_THRESHOLD = 0.0211, 20000   # 二代健保補充保費：單筆股利 ≥ 2 萬元扣 2.11%
+
+
+def load_trades() -> pd.DataFrame:
+    ensure_dirs()
+    if not TRADES_CSV.exists():
+        pd.DataFrame(columns=COLUMNS).to_csv(TRADES_CSV, index=False)
+    df = pd.read_csv(TRADES_CSV, dtype={"note": str})
+    if df.empty:
+        return pd.DataFrame(columns=COLUMNS)
+    df["date"] = pd.to_datetime(df["date"])
+    df["note"] = df["note"].fillna("")
+    for c in ("shares", "price", "fee"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    return df.sort_values("date", kind="stable").reset_index(drop=True)
+
+
+def default_fee(shares: float, price: float, cfg: dict) -> float:
+    return round(max(cfg["fee_min"], shares * price * cfg["fee_rate"] * cfg["fee_discount"]))
+
+
+def add_trade(date: str, shares: int, price: float, action: str = "buy", fee: float | None = None,
+              note: str = "", cfg: dict | None = None) -> dict:
+    cfg = cfg or load_config()
+    if action not in ("buy", "sell"):
+        raise ValueError("action 只能是 buy 或 sell")
+    if shares <= 0 or price <= 0:
+        raise ValueError("股數與價格需大於 0")
+    fee = default_fee(shares, price, cfg) if fee is None else fee
+    row = {"date": pd.Timestamp(date).strftime("%Y-%m-%d"), "action": action, "shares": int(shares),
+           "price": float(price), "fee": float(fee), "note": note}
+    load_trades()
+    pd.DataFrame([row]).to_csv(TRADES_CSV, mode="a", header=False, index=False)
+    return row
+
+
+def holdings_on(trades: pd.DataFrame, before: pd.Timestamp) -> float:
+    t = trades[trades["date"] < before]
+    return float(t.loc[t["action"] == "buy", "shares"].sum() - t.loc[t["action"] == "sell", "shares"].sum())
+
+
+def summary(base: pd.DataFrame, cfg: dict) -> dict:
+    """base 需含 close（原始價）與 div（除息日每單位股利）。"""
+    trades = load_trades()
+    last_date = base.index[-1]
+    close = float(base["close"].iloc[-1])
+    ttm_div = float(base.loc[base.index > last_date - pd.Timedelta(days=365), "div"].sum())
+    last_div_rows = base[base["div"] > 0]
+    last_div = float(last_div_rows["div"].iloc[-1]) if len(last_div_rows) else 0.0
+
+    res = {"has_position": False, "close": close, "date": last_date, "ttm_div": ttm_div,
+           "last_div": last_div, "market_yield": ttm_div / close if close else 0.0}
+    if trades.empty:
+        return res
+
+    shares = cost = 0.0
+    for _, t in trades.iterrows():
+        if t["action"] == "buy":
+            shares += t["shares"]
+            cost += t["shares"] * t["price"] + t["fee"]
+        else:   # 賣出：依平均成本等比例扣除成本
+            if shares > 0:
+                cost -= cost * min(t["shares"], shares) / shares
+            shares -= t["shares"]
+
+    # 自動計算已領配息
+    first = trades["date"].min()
+    divs = []
+    for d, row in base[(base["div"] > 0) & (base.index > first)].iterrows():
+        held = holdings_on(trades, d)
+        if held > 0:
+            amt = held * row["div"]
+            divs.append({"ex_date": d, "shares": held, "per_unit": row["div"], "amount": amt,
+                         "nhi": amt * NHI_RATE if amt >= NHI_THRESHOLD else 0.0})
+    cum_div = sum(x["amount"] - x["nhi"] for x in divs)
+    avg = cost / shares if shares > 0 else 0.0
+    mv = shares * close
+    next_div = shares * last_div
+    res.update({
+        "has_position": shares > 0, "shares": shares, "lots": shares / 1000, "cost": cost,
+        "avg_cost": avg, "market_value": mv, "unrealized": mv - cost,
+        "unrealized_pct": (mv - cost) / cost if cost else 0.0, "cum_dividends": cum_div,
+        "total_pl": mv - cost + cum_div, "cost_yield": ttm_div / avg if avg else 0.0,
+        "dividends": divs, "next_div_est": next_div,
+        "next_div_nhi": next_div * NHI_RATE if next_div >= NHI_THRESHOLD else 0.0,
+        "n_trades": len(trades), "last_trade": trades.iloc[-1].to_dict(),
+    })
+    return res
+
+
+def what_if(pos: dict, amount: float, price: float, cfg: dict) -> dict:
+    """若以 price 投入 amount 元，股數與新均價。"""
+    n = int(amount // (price * (1 + cfg["fee_rate"] * cfg["fee_discount"])))
+    if n <= 0:
+        return {"shares": 0}
+    fee = default_fee(n, price, cfg)
+    shares = pos.get("shares", 0) + n
+    cost = pos.get("cost", 0) + n * price + fee
+    return {"shares": n, "new_avg": cost / shares, "old_avg": pos.get("avg_cost", 0), "total_shares": shares}
+
+
+def _cli():
+    ap = argparse.ArgumentParser(description=f"{load_config()['symbol']} 持股紀錄")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    a = sub.add_parser("add", help="新增一筆交易")
+    a.add_argument("--date", required=True)
+    a.add_argument("--shares", type=int, required=True, help="股數（1 張 = 1000）")
+    a.add_argument("--price", type=float, required=True)
+    a.add_argument("--action", default="buy", choices=["buy", "sell"])
+    a.add_argument("--fee", type=float, default=None)
+    a.add_argument("--note", default="")
+    sub.add_parser("summary", help="顯示持股摘要")
+    args = ap.parse_args()
+    if args.cmd == "add":
+        print("已記錄：", add_trade(args.date, args.shares, args.price, args.action, args.fee, args.note))
+    else:
+        from .features import build
+        cfg = load_config()
+        base, _, _ = build(cfg)
+        s = summary(base, cfg)
+        if not s["has_position"]:
+            print("目前沒有持股紀錄")
+            return
+        print(f"持股 {s['shares']:,.0f} 股（{s['lots']:.3f} 張），均價 {s['avg_cost']:.2f}，"
+              f"市值 {s['market_value']:,.0f}，未實現 {s['unrealized']:+,.0f}，累計領息 {s['cum_dividends']:,.0f}")
+
+
+if __name__ == "__main__":
+    _cli()
