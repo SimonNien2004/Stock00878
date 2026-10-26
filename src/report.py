@@ -74,6 +74,27 @@ def next_dca(d: pd.Timestamp, cfg: dict) -> pd.Timestamp | None:
     return None
 
 
+def next_ex_estimate(base: pd.DataFrame, d: pd.Timestamp, cfg: dict) -> pd.Timestamp | None:
+    """下次除息日（估）：優先用 config 的 ex_months / ex_day；沒有設定時用過去除息間隔的中位數。"""
+    months, day = cfg.get("ex_months"), int(cfg.get("ex_day", 18))
+    if months:
+        for y in (d.year, d.year + 1):
+            for m in sorted(months):
+                last = (pd.Timestamp(year=y, month=m, day=1) + pd.offsets.MonthEnd(0)).day
+                t = pd.Timestamp(year=y, month=m, day=min(day, last))
+                if t > d:
+                    return t
+    ex_dates = base.index[base["div"] > 0]
+    if not len(ex_dates):
+        return None
+    gaps = np.diff(ex_dates.values).astype("timedelta64[D]").astype(int)[-6:]
+    step = pd.Timedelta(days=int(np.median(gaps)) if len(gaps) else 91)
+    nxt = ex_dates[-1] + step
+    while nxt <= d:
+        nxt += step
+    return nxt
+
+
 def eval_budget(cfg: dict) -> float:
     """回測用的每月額外預算：未設定時，以每月定期定額總額作為假設金額。"""
     if cfg.get("monthly_budget"):
@@ -161,12 +182,7 @@ def write_daily(*, base, X, today, contrib, pos, bt, ev, live, cfg, engine, meta
     d = base.index[-1]
     close = float(base["close"].iloc[-1])
     sig, sc, conf = today["signal"], float(today["score"]), today["confidence"]
-    ex_dates = base.index[base["div"] > 0]
-    next_ex = None
-    if len(ex_dates):
-        next_ex = ex_dates[-1] + pd.Timedelta(days=91)
-        while next_ex < d:
-            next_ex += pd.Timedelta(days=91)
+    next_ex = next_ex_estimate(base, d, cfg)
     next_rb = next_rebalance(d, cfg)
     now = datetime.now(TPE).strftime("%Y-%m-%d %H:%M")
 

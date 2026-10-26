@@ -121,9 +121,12 @@ def build(cfg: dict, raw: dict | None = None) -> tuple[pd.DataFrame, pd.DataFram
         if len(past):
             last = past[-1]
             since.append((d - last).days)
-            nxt = last + pd.Timedelta(days=91)
+            # 以「到當天為止」的歷史除息間隔中位數推估（季配約 91 天、半年配約 182 天），不偷看未來
+            gaps = np.diff(past.values).astype("timedelta64[D]").astype(int)[-6:]
+            step = pd.Timedelta(days=int(np.median(gaps)) if len(gaps) else 91)
+            nxt = last + step
             while nxt < d:
-                nxt += pd.Timedelta(days=91)
+                nxt += step
             to_ex.append((nxt - d).days)
         else:
             since.append(np.nan)
