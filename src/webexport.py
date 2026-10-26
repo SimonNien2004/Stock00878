@@ -60,7 +60,7 @@ def export(*, base, scored, today, js_report, bt, ev, live, cfg, meta, days: int
 
     backtest = {
         "start": bt["start"].strftime("%Y-%m-%d"), "end": bt["end"].strftime("%Y-%m-%d"),
-        "monthly_budget": cfg["monthly_budget"], "rows": rows,
+        "monthly_budget": __import__("src.report", fromlist=["eval_budget"]).eval_budget(cfg), "rows": rows,
         "signal_counts": {k: int(v) for k, v in bt["signal_counts"].items()},
         "equity": {"months": months, "signal": month_end(s_eq, invested), "dca": month_end(d_eq, invested)},
         "evaluation": {k: _f(v) if isinstance(v, (int, float, np.floating)) else v
@@ -80,7 +80,7 @@ def export(*, base, scored, today, js_report, bt, ev, live, cfg, meta, days: int
         "next_ex_dividend_est": js_report["next_ex_dividend_est"],
         "next_rebalance_est": js_report["next_rebalance_est"],
         "ttm_dividend": _f(base.loc[base.index > base.index[-1] - pd.Timedelta(days=365), "div"].sum()),
-        "config": {k: cfg[k] for k in ("monthly_budget", "reserve", "fee_rate", "fee_discount", "fee_min")}
+        "config": {k: cfg.get(k) for k in ("monthly_budget", "reserve", "fee_rate", "fee_discount", "fee_min", "dca")}
                   | {"thresholds": cfg["thresholds"]},
         "engine": js_report["engine"], "data_source": meta.get("sources", {}).get("price"),
         "demo": "DEMO" in meta.get("sources", {}).values(),

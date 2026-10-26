@@ -39,7 +39,8 @@ def _xirr(flows: list[tuple[pd.Timestamp, float]]) -> float:
 
 def simulate(price: pd.Series, cfg: dict, signals: pd.Series | None = None) -> dict:
     """signals=None 為定期定額；否則依訊號加碼。"""
-    B = float(cfg["monthly_budget"])
+    from .report import eval_budget
+    B = eval_budget(cfg)
     max_idle = cfg["backtest"]["max_idle_months"]
     idx = price.index
     ym = idx.year * 12 + idx.month

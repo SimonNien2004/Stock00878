@@ -60,7 +60,8 @@ def test_dca_buys_every_month():
     price = pd.Series(np.linspace(30, 36, len(idx)), index=idx)
     r = backtest.simulate(price, CFG, None)
     assert r["n_buys"] == 12
-    assert r["invested"] == 12 * CFG["monthly_budget"]
+    from src.report import eval_budget
+    assert r["invested"] == 12 * eval_budget(CFG)
 
 
 def test_portfolio_and_dividends(tmp_path, monkeypatch=None):

@@ -59,23 +59,58 @@ def live_accuracy(log: pd.DataFrame) -> dict:
 
 
 # ---------------------------------------------------------------- 文字
+def next_dca(d: pd.Timestamp, cfg: dict) -> pd.Timestamp | None:
+    """下一次定期定額扣款日（日曆日，遇休市券商會順延）。"""
+    days = sorted((cfg.get("dca") or {}).get("days") or [])
+    if not days:
+        return None
+    for k in range(3):
+        m = (d + pd.offsets.MonthBegin(k)) if k else d.replace(day=1)
+        last = (m + pd.offsets.MonthEnd(0)).day
+        for day in days:
+            t = m.replace(day=min(day, last))
+            if t > d:
+                return t
+    return None
+
+
+def eval_budget(cfg: dict) -> float:
+    """回測用的每月額外預算：未設定時，以每月定期定額總額作為假設金額。"""
+    if cfg.get("monthly_budget"):
+        return float(cfg["monthly_budget"])
+    dca = cfg.get("dca") or {}
+    return float(dca.get("amount", 0) * len(dca.get("days", []))) or 10000.0
+
+
 def advice(sig: str, cfg: dict, close: float, pos: dict) -> list[str]:
-    B, R = cfg["monthly_budget"], cfg["reserve"]
+    B, R = cfg.get("monthly_budget", 0), cfg.get("reserve", 0)
+    dca = cfg.get("dca") or {}
+    lines, amt = [], 0
+    nd = next_dca(pd.Timestamp(pos.get("date", pd.Timestamp.today())).normalize(), cfg)
+    if dca.get("amount") and nd is not None:
+        days = "、".join(str(x) for x in dca["days"])
+        lines.append(f"定期定額照常：每月 {days} 日各 {dca['amount']:,.0f} 元，下次約 {nd:%m/%d} 扣款（遇休市順延）。")
+    aim = cfg["thresholds"]["aggressive"]
     if sig == AGGRESSIVE:
-        amt = B
-        lines = [f"可投入本月全部預算 {B:,.0f} 元；若手上有預備金，可視情況加碼（上限 {R:,.0f} 元）。"]
+        if B:
+            amt = B
+            lines.append(f"額外加碼：可投入本月全部額外預算 {B:,.0f} 元" + (f"；預備金也可視情況動用（上限 {R:,.0f} 元）。" if R else "。"))
+        else:
+            lines.append("額外加碼：適合動用定期定額以外的資金（額外預算尚未設定，告訴 Claude 金額後會換算股數）。")
     elif sig == NORMAL:
-        amt = B / 2
-        lines = [f"本月預算先投入一半（約 {B / 2:,.0f} 元），其餘等評分 ≥ {cfg['thresholds']['aggressive']}，"
-                 f"或月底照定期定額投入。"]
+        if B:
+            amt = B / 2
+            lines.append(f"額外加碼：本月額外預算先投入一半（約 {B / 2:,.0f} 元），其餘等評分 ≥ {aim} 再用。")
+        else:
+            lines.append(f"額外加碼：可小額加碼；想一次投入較多，等評分 ≥ {aim} 再用。")
     else:
-        amt = 0
-        lines = [f"暫不加碼，資金保留到下次訊號；若連續 {cfg['backtest']['max_idle_months']} 個月沒有投入，"
-                 f"就照定期定額投入，避免資金閒置太久。"]
-    if amt:
-        w = what_if(pos, amt, close, cfg)
+        lines.append("額外加碼：先保留，定期定額照常即可。")
+    w_amt = amt or dca.get("amount", 0)
+    if w_amt:
+        w = what_if(pos, w_amt, close, cfg)
         if w["shares"]:
-            line = f"以今日收盤 {close:.2f} 估算，{amt:,.0f} 元約可買 {w['shares']:,} 股"
+            what = "下次定期定額" if not amt else "額外加碼"
+            line = f"以今日收盤 {close:.2f} 估算，{what} {w_amt:,.0f} 元約可買 {w['shares']:,} 股"
             if pos.get("has_position"):
                 line += f"，你的均價會從 {w['old_avg']:.2f} 變為 {w['new_avg']:.2f}"
             lines.append(line + "。")
@@ -158,7 +193,7 @@ def write_daily(*, base, X, today, contrib, pos, bt, ev, live, cfg, engine, meta
 
     s, c = bt["signal"], bt["dca"]
     L += ["## 系統表現", "",
-          f"回測 {bt['start']:%Y-%m-%d} ～ {bt['end']:%Y-%m-%d}，每月預算 {cfg['monthly_budget']:,.0f} 元，僅用樣本外預測：", "",
+          f"回測 {bt['start']:%Y-%m-%d} ～ {bt['end']:%Y-%m-%d}，每月額外預算 {eval_budget(cfg):,.0f} 元{'（未設定，以定期定額月總額假設）' if not cfg.get('monthly_budget') else ''}，僅用樣本外預測：", "",
           "| 策略 | 年化報酬（XIRR） | 總報酬 | 平均買入價（還原價） | 最大回撤 |", "| --- | --- | --- | --- | --- |",
           f"| 照訊號加碼 | {_pct(s['xirr'])} | {_pct(s['total_return'])} | {s['avg_cost']:.2f} | {_pct(s['max_drawdown'])} |",
           f"| 定期定額 | {_pct(c['xirr'])} | {_pct(c['total_return'])} | {c['avg_cost']:.2f} | {_pct(c['max_drawdown'])} |",
